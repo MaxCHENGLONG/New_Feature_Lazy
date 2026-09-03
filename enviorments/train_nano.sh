@@ -82,13 +82,17 @@ fi
 mkdir -p "$OUT_DIR" "$ROOT/logs"
 
 # train.py reads data/<dataset>/ relative to the cwd. The tokenized .bin files were unpacked
-# once under the old checkout; link them in rather than copying 17G
-if [[ ! -e "$ROOT/data/$DATASET/train.bin" ]]; then
-    [[ -f "$OLD_ROOT/data/$DATASET/train.bin" ]] || { echo "ERROR: no train.bin in $ROOT/data/$DATASET or $OLD_ROOT/data/$DATASET" >&2; exit 1; }
-    rmdir "$ROOT/data/$DATASET" 2>/dev/null || true   # only removes it if it is empty
-    ln -s "$OLD_ROOT/data/$DATASET" "$ROOT/data/$DATASET"
-    echo "linked $ROOT/data/$DATASET -> $OLD_ROOT/data/$DATASET"
-fi
+# once under the old checkout; link them in file by file rather than copying 17G. The
+# directory itself already exists here (prepare.py, readme.md), so it cannot be replaced by
+# a link: `ln -s <dir> <existing dir>` would silently nest the link inside it
+mkdir -p "$ROOT/data/$DATASET"
+for f in train.bin val.bin meta.pkl; do
+    if [[ ! -e "$ROOT/data/$DATASET/$f" && -f "$OLD_ROOT/data/$DATASET/$f" ]]; then
+        ln -s "$OLD_ROOT/data/$DATASET/$f" "$ROOT/data/$DATASET/$f"
+        echo "linked $ROOT/data/$DATASET/$f -> $OLD_ROOT/data/$DATASET/$f"
+    fi
+done
+[[ -e "$ROOT/data/$DATASET/train.bin" ]] || { echo "ERROR: no train.bin in $ROOT/data/$DATASET or $OLD_ROOT/data/$DATASET" >&2; exit 1; }
 
 echo "mode=$MODE  image=$SIF  nodes=$SLURM_NNODES  ranks=$SLURM_NTASKS"
 echo "master=$MASTER_ADDR  out_dir=$OUT_DIR"
