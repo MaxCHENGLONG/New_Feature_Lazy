@@ -15,6 +15,11 @@ weights from the iter-0 snapshot is recorded.
 
 Writes <run-dir>/balance.json (or --out). The distance column needs the iter-0 snapshot
 (ckpt_0000000.pt, always written when snapshots are on), otherwise it is null.
+
+enviorments/frustration.sh runs one process per snapshot, each writing balance_<iter>.json;
+--merge stitches those back into one balance.json with the same layout as a whole-run call:
+
+  python transformer_frustration/transformer_frustration_and_distance.py --merge --weights <run-dir>
 """
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,6 +31,36 @@ import numpy as np
 
 from transformer_frustration.transformer_utils import load_model_information, network_construction
 from transformer_frustration.compute_frustration import compute_frustration_edgelist
+
+
+# the lists with one entry per snapshot; everything else in the json describes the run
+PER_SNAPSHOT = ['epoch', 'loss', 'r_frust', 'r_spin', 'n_frust', 'n_spin', 'distance']
+
+
+def merge(run_dir, out=None):
+    """Merge <run_dir>/balance_<iter>.json (one per snapshot) into <run_dir>/balance.json."""
+    assert os.path.isdir(run_dir), f"--merge needs a run directory, got {run_dir}"
+    files = sorted(glob.glob(os.path.join(run_dir, 'balance_*.json')))
+    assert files, f"no balance_*.json in {run_dir}"
+    parts = []
+    for f in files:
+        with open(f) as fh:
+            parts.append(json.load(fh))
+    parts.sort(key=lambda r: r['epoch'][0])
+
+    merged = {k: v for k, v in parts[0].items() if k not in PER_SNAPSHOT}
+    merged['weights'] = os.path.abspath(run_dir)
+    for r in parts:
+        for k in ('T', 'is_embed'):
+            assert r[k] == merged[k], f"{r['weights']} used {k}={r[k]}, the others {merged[k]}"
+    for k in PER_SNAPSHOT:
+        merged[k] = [x for r in parts for x in r[k]]
+
+    out = out or os.path.join(run_dir, 'balance.json')
+    with open(out, 'w') as fh:
+        json.dump(merged, fh, indent=4)
+    print(f"merged {len(parts)} snapshot file(s) into {out}: "
+          f"iter {merged['epoch'][0]:,} .. {merged['epoch'][-1]:,}")
 
 
 def run_real(rows, cols, vals):
@@ -51,7 +86,13 @@ def main():
                    help="also store the +1/-1 gauge vectors (one entry per node, large)")
     p.add_argument("--seed", type=int, default=0, help="seed for the greedy flips and the null shuffles")
     p.add_argument("--out", help="output json. default <run-dir>/balance.json or <ckpt-dir>/balance_<iter>.json")
+    p.add_argument("--merge", action="store_true",
+                   help="compute nothing: merge <run-dir>/balance_*.json (one per snapshot) into <run-dir>/balance.json")
     args = p.parse_args()
+
+    if args.merge:
+        merge(args.weights, args.out)
+        return
 
     if os.path.isdir(args.weights):
         files = sorted(glob.glob(os.path.join(args.weights, "ckpt_*.pt")))

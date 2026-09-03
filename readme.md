@@ -241,10 +241,14 @@ python transformer_frustration/transformer_frustration_and_distance.py --weights
 python transformer_frustration/transformer_frustration_and_distance.py --weights <run-dir>/ckpt_0001000.pt
 
 # on the cluster: one process per snapshot, NPROC (default 8) in parallel, one
-# balance_<iter>.json each; snapshots that already have one are skipped (FORCE=1 redoes them)
+# balance_<iter>.json each, merged into <run-dir>/balance.json at the end; snapshots that
+# already have their file are skipped (FORCE=1 redoes them)
 sbatch enviorments/frustration.sh <run-dir>
 sbatch enviorments/frustration.sh <run-dir>/ckpt_0000000.pt        # time one snapshot first
 NPROC=16 sbatch enviorments/frustration.sh <run-dir> --T=4 --is_embed  # extra args reach the script
+
+# merge by hand (e.g. after adding snapshots), no computation
+python transformer_frustration/transformer_frustration_and_distance.py --merge --weights <run-dir>
 ```
 
 | option | default | meaning |

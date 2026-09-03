@@ -19,7 +19,7 @@
 # The computation is numpy on the CPU (the greedy gauge flipping is sequential, a GPU would
 # not help); the single GPU is only what gets us a node on this partition. Each snapshot runs
 # as its own process and writes <run>/balance_<iter>.json, so snapshots already done are
-# skipped on a resubmit and the results can be merged by globbing those files. One process
+# skipped on a resubmit; at the end they are merged into <run>/balance.json. One process
 # peaks at ~3GB of RAM for the 124M model at T=1 without embeddings.
 
 set -euo pipefail
@@ -59,11 +59,17 @@ elif [[ -d "$RUN" ]]; then
         if [[ -z "${FORCE:-}" && -f "$RUN/balance_$it.json" ]]; then continue; fi
         echo "$f"
     done)
-    [[ -n "$todo" ]] || { echo "nothing to do: every ckpt_*.pt in $RUN already has a balance_*.json (FORCE=1 to redo)"; exit 0; }
-    echo "$(echo "$todo" | wc -l) checkpoint(s) to process"
-    # "$@" is expanded by this shell before xargs runs, so the extra args reach every process
-    echo "$todo" | xargs -P "$NPROC" -I{} \
-        apptainer exec --bind /nobackup "$SIF" python "$SCRIPT" --weights {} "$@"
+    if [[ -n "$todo" ]]; then
+        echo "$(echo "$todo" | wc -l) checkpoint(s) to process"
+        # "$@" is expanded by this shell before xargs runs, so the extra args reach every process
+        echo "$todo" | xargs -P "$NPROC" -I{} \
+            apptainer exec --bind /nobackup "$SIF" python "$SCRIPT" --weights {} "$@" \
+            || echo "WARNING: some snapshots failed (xargs status $?), merging the ones that finished" >&2
+    else
+        echo "nothing to compute: every ckpt_*.pt in $RUN already has a balance_*.json (FORCE=1 to redo)"
+    fi
+    # stitch the per-snapshot files into one balance.json with the whole-run layout
+    apptainer exec --bind /nobackup "$SIF" python "$SCRIPT" --merge --weights "$RUN"
 else
     echo "ERROR: $RUN is neither a run directory nor a checkpoint file" >&2
     exit 1
