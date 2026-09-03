@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH -t 24:00:00
 #SBATCH -J train_nanogpt
-#SBATCH -o /nobackup/proj/disk/naiss2025-22-1730/personal/licheng/GPT2_Training/logs/%x-%j.out
+#SBATCH -o /nobackup/proj/disk/naiss2025-22-1730/personal/licheng/New_Feature_Lazy/logs/%x-%j.out
 
 # Train GPT-2 124M on 1 node x 4 GH200 = 4 ranks. Usage:
 #   sbatch enviorments/train_nano.sh smoke   # shakespeare_char, ~100 iters, validates the DDP path
@@ -36,11 +36,14 @@ RUN=""
 if [[ $# -ge 1 && "$1" != --* ]]; then RUN=$1; shift; fi
 
 CACHE_DIR=/nobackup/proj/disk/naiss2025-22-1730/personal/licheng
-ROOT=$CACHE_DIR/GPT2_Training
+ROOT=$CACHE_DIR/New_Feature_Lazy        # this checkout: train.py, model.py, configurator.py
+OLD_ROOT=$CACHE_DIR/GPT2_Training       # the previous checkout: holds nanogpt.sif and the 17G dataset
+# the SBATCH -o path above must exist before sbatch, or Slurm drops the log: mkdir -p $ROOT/logs once
 
-SIF=$ROOT/nanogpt.sif
+SIF=$OLD_ROOT/nanogpt.sif
+[[ -f "$SIF" ]] || SIF=$ROOT/nanogpt.sif
 [[ -f "$SIF" ]] || SIF=$ROOT/enviorments/nanogpt.sif
-[[ -f "$SIF" ]] || { echo "ERROR: nanogpt.sif not found in $ROOT or $ROOT/enviorments" >&2; exit 1; }
+[[ -f "$SIF" ]] || { echo "ERROR: nanogpt.sif not found in $OLD_ROOT, $ROOT or $ROOT/enviorments" >&2; exit 1; }
 
 # train.py resolves configurator.py / data/ / out_dir relative to the cwd
 cd "$ROOT"
@@ -76,7 +79,16 @@ else
         ARGS+=(--init_from=resume)
     fi
 fi
-mkdir -p "$OUT_DIR"
+mkdir -p "$OUT_DIR" "$ROOT/logs"
+
+# train.py reads data/<dataset>/ relative to the cwd. The tokenized .bin files were unpacked
+# once under the old checkout; link them in rather than copying 17G
+if [[ ! -e "$ROOT/data/$DATASET/train.bin" ]]; then
+    [[ -f "$OLD_ROOT/data/$DATASET/train.bin" ]] || { echo "ERROR: no train.bin in $ROOT/data/$DATASET or $OLD_ROOT/data/$DATASET" >&2; exit 1; }
+    rmdir "$ROOT/data/$DATASET" 2>/dev/null || true   # only removes it if it is empty
+    ln -s "$OLD_ROOT/data/$DATASET" "$ROOT/data/$DATASET"
+    echo "linked $ROOT/data/$DATASET -> $OLD_ROOT/data/$DATASET"
+fi
 
 echo "mode=$MODE  image=$SIF  nodes=$SLURM_NNODES  ranks=$SLURM_NTASKS"
 echo "master=$MASTER_ADDR  out_dir=$OUT_DIR"
@@ -84,7 +96,7 @@ echo "master=$MASTER_ADDR  out_dir=$OUT_DIR"
 # pull the .bin files into every node's page cache first. get_batch does ~1000 small
 # random reads per iteration across the ranks, and on a cold shared filesystem each one
 # is a network round trip -- that alone costs more than the step it feeds.
-echo "warming page cache with $(du -sh $ROOT/data/$DATASET | cut -f1) of $DATASET ..."
+echo "warming page cache with $(du -shL $ROOT/data/$DATASET/ | cut -f1) of $DATASET ..."
 time srun --ntasks-per-node=1 bash -c "cat $ROOT/data/$DATASET/*.bin > /dev/null"
 
 # sample GPU power/utilisation on this node for the duration of the run
