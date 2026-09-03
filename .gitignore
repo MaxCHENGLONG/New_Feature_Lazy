@@ -1,0 +1,6 @@
+.vscode/
+*.sif
+logs/
+trained_weights/
+__pycache__/
+training_loss/

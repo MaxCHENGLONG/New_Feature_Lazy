@@ -1,0 +1,34 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/pytorch:24.12-py3
+
+%post
+    pip install --no-cache-dir \
+        tiktoken \
+        datasets \
+        transformers \
+        wandb \
+        tqdm \
+        requests
+
+    # 自检：确认 NGC 的 NVIDIA 调优版 torch 没被 PyPI 版覆盖
+    python << 'PYEOF'
+import platform, torch, tiktoken, datasets, transformers
+print('arch        :', platform.machine())
+print('torch       :', torch.__version__)
+print('cuda        :', torch.version.cuda)
+print('tiktoken    :', tiktoken.__version__)
+print('datasets    :', datasets.__version__)
+print('transformers:', transformers.__version__)
+PYEOF
+
+    pip cache purge || true
+
+%environment
+    export PYTHONUNBUFFERED=1
+
+%runscript
+    exec python "$@"
+
+%labels
+    Author licheng
+    Description nanoGPT training environment for GH200 (Arrhenius, aarch64)
