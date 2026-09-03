@@ -222,3 +222,40 @@ python train.py --init_scale_residual=False --alpha=32.0
 
 Snapshot `ckpt_0000000.pt` is iteration 0, i.e. the untrained initialization itself — export
 it with step 2 to inspect the initial weights directly.
+
+---
+
+## 5. Frustration — `transformer_frustration/`
+
+Treats the linearized transformer (residual stream, `W_O W_V`, `W_1`, `W_2`, uniform causal
+attention; LayerNorm gains, Q/K and the head are ignored) as a signed weighted network and
+computes its frustration index by greedy gauge flipping, once on the real weights and once
+on a weight-shuffled null model, plus the L2 distance of the network weights from iter 0.
+CPU/numpy only, no GPU needed, but the 124M model gives ~64M edges per snapshot at `T=1`,
+so run it on a compute node, not the login node.
+
+```bash
+# every ckpt_*.pt of a run -> <run-dir>/balance.json
+python transformer_frustration/transformer_frustration_and_distance.py --weights <run-dir>
+# a single checkpoint -> <ckpt-dir>/balance_<iter>.json
+python transformer_frustration/transformer_frustration_and_distance.py --weights <run-dir>/ckpt_0001000.pt
+
+# on the cluster: one process per snapshot, NPROC (default 8) in parallel, one
+# balance_<iter>.json each; snapshots that already have one are skipped (FORCE=1 redoes them)
+sbatch enviorments/frustration.sh <run-dir>
+sbatch enviorments/frustration.sh <run-dir>/ckpt_0000000.pt        # time one snapshot first
+NPROC=16 sbatch enviorments/frustration.sh <run-dir> --T=4 --is_embed  # extra args reach the script
+```
+
+| option | default | meaning |
+| --- | --- | --- |
+| `--weights` | — | run directory with `ckpt_*.pt`, or one checkpoint `.pt` (required) |
+| `--T` | `1` | context length the network is unrolled over |
+| `--is_embed` | off | include the `wte` / `wpe` embedding block (adds ~39M edges) |
+| `--n_null` | `1` | shuffled-weight null models per snapshot, `0` skips them |
+| `--save_spin` | off | also store the ±1 gauge vector per node (large json) |
+| `--seed` | `0` | seed for the greedy flips and the shuffles |
+| `--out` | see above | output json path |
+
+The json holds, per snapshot: `epoch`, `loss`, `r_frust` (real), `n_frust` (list of nulls),
+`distance`, and the run's `train_config` so the file records which regime it came from.
