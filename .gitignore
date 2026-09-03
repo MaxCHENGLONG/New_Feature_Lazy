@@ -4,3 +4,11 @@ logs/
 trained_weights/
 __pycache__/
 training_loss/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+data/
+training_loss/
+*.pt
+*.ckpt
+*.bin
