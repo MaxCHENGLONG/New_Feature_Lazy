@@ -121,6 +121,12 @@ class GPTConfig:
     # composed with init_scale_residual. 1e-3 or 0.0 starts every block near the identity, so the
     # network begins at effective depth 0 and recruits layers one at a time (saddle-to-saddle)
     init_proj_scale: float = 1.0
+    # in-place multiplier on lm_head.weight after init. The logits scale with it exactly like
+    # with alpha, but here it is the magnitude of the initial weights that sets the regime:
+    # >> 1 is the lazy regime (pair with lr / scale^2, as for alpha), << 1 starts the output
+    # near 0. With tied weights lm_head is wte, so the input embedding is scaled too and wpe
+    # is scaled alike to keep the token/position balance into the first LayerNorm
+    init_head_scale: float = 1.0
     # Chizat-Bach lazy scaling as an output multiplier: logits = alpha * lm_head(x). No weight is
     # touched, so the softmax inside attention is unaffected. alpha=1 is the usual model;
     # alpha >> 1 with lr / alpha^2 is the lazy regime
@@ -163,12 +169,17 @@ class GPT(nn.Module):
                 for pn, p in self.named_parameters():
                     if pn.endswith('c_proj.weight'):
                         p.mul_(proj_scale)
+        if config.init_head_scale != 1.0:
+            with torch.no_grad():
+                self.lm_head.weight.mul_(config.init_head_scale)
+                if config.tie_weights:
+                    self.transformer.wpe.weight.mul_(config.init_head_scale)
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
         print(f"weight init: dist={config.init_dist}, std={config.init_std}, gain={config.init_gain}, "
               f"scale_residual={config.init_scale_residual}, proj_scale={config.init_proj_scale}, "
-              f"alpha={config.alpha}")
+              f"head_scale={config.init_head_scale}, alpha={config.alpha}")
 
     def get_num_params(self, non_embedding=True):
         """
