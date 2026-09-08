@@ -74,11 +74,13 @@ init_std = 0.02 # std of the normal/trunc_normal/uniform init. ignored by the xa
 init_gain = 1.0 # gain of the xavier inits. ignored by the others
 init_scale_residual = True # rescale residual projections by 1/sqrt(2*n_layer), per GPT-2
 init_proj_scale = 1.0 # extra multiplier on every c_proj.weight. 1e-3 or 0.0: saddle-to-saddle init
-init_head_scale = 1.0 # multiplier on lm_head.weight after init. >> 1: lazy regime set by the readout magnitude (pass learning_rate / scale^2 yourself), << 1: output starts near 0
+init_head_scale = 1.0 # multiplier on lm_head.weight after init. >> 1: lazy regime set by the readout magnitude (pass learning_rate / scale yourself), << 1: output starts near 0
 seed = 1337 # rng seed. change it to draw a different init (and a different data order)
 # lazy regime, per Chizat & Bach (2019): logits = alpha * f(theta) with every weight drawn
 # identically (no weight is scaled, so no softmax saturates). learning_rate and min_lr are
-# divided by alpha^2, which is what keeps the alpha-amplified function from diverging.
+# divided by alpha. Chizat & Bach divide by alpha^2 under gradient flow, but AdamW's step size
+# is set by lr regardless of gradient magnitude, so lr / alpha is what keeps the function-space
+# speed equal to alpha=1 while the weights move O(1/alpha).
 # alpha=1 is the usual model; alpha >> 1 is the lazy regime
 alpha = 1.0
 alpha_center = False # subtract the logits of a frozen copy of the init, so the model starts at 0
@@ -108,8 +110,8 @@ exec(open('configurator.py').read()) # overrides from command line or config fil
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 if alpha != 1.0:
-    learning_rate /= alpha ** 2
-    min_lr /= alpha ** 2
+    learning_rate /= alpha
+    min_lr /= alpha
     print(f"alpha={alpha}: learning_rate -> {learning_rate:.3e}, min_lr -> {min_lr:.3e}")
 
 # various inits, derived attributes, I/O setup
@@ -211,7 +213,7 @@ elif init_from == 'resume':
     for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
         model_args[k] = checkpoint_model_args[k]
     # alpha/tie_weights cannot be silently taken from the checkpoint: learning_rate was already
-    # divided by the command-line alpha^2 above, and loading an untied checkpoint into a tied
+    # divided by the command-line alpha above, and loading an untied checkpoint into a tied
     # model does not error -- lm_head.weight just overwrites wte. Demand the same flags instead.
     for k, default in [('alpha', 1.0), ('tie_weights', True)]:
         saved = checkpoint_model_args.get(k, default) # older checkpoints predate the flags

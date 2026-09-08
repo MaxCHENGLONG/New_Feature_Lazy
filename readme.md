@@ -182,7 +182,7 @@ Each run name gets its own `out_dir`, so parallel init sweeps never share a chec
 | `--init_gain` | `1.0` | gain of `xavier_normal` / `xavier_uniform`; ignored by the others |
 | `--init_scale_residual` | `True` | multiply every `c_proj.weight` by `1/sqrt(2*n_layer)` (GPT-2 paper) |
 | `--init_proj_scale` | `1.0` | extra multiplier on every `c_proj.weight`, composed with the above. `1e-3` or `0.0` gives the saddle-to-saddle init |
-| `--alpha` | `1.0` | logits are multiplied by `alpha` at forward time; `learning_rate` and `min_lr` are divided by `alpha^2`. No weight is scaled |
+| `--alpha` | `1.0` | logits are multiplied by `alpha` at forward time; `learning_rate` and `min_lr` are divided by `alpha` (not `alpha^2`: AdamW's step is set by `lr`, not the gradient). No weight is scaled |
 | `--seed` | `1337` | changes the draw (and the data order) |
 
 What each distribution does to `nn.Linear` and `nn.Embedding` weights:
@@ -216,7 +216,7 @@ switched off), LayerNorm `weight=1` / `bias=0`, and the default AdamW settings.
 python train.py --init_scale_residual=False
 # feature learning: residual-branch output projections start at std = 0.02 * 1e-3 (or 0.0)
 python train.py --init_scale_residual=False --init_proj_scale=1e-3
-# lazy learning: logits * 32, learning_rate and min_lr / 1024
+# lazy learning: logits * 32, learning_rate and min_lr / 32
 python train.py --init_scale_residual=False --alpha=32.0
 ```
 

@@ -123,13 +123,14 @@ class GPTConfig:
     init_proj_scale: float = 1.0
     # in-place multiplier on lm_head.weight after init. The logits scale with it exactly like
     # with alpha, but here it is the magnitude of the initial weights that sets the regime:
-    # >> 1 is the lazy regime (pair with lr / scale^2, as for alpha), << 1 starts the output
+    # >> 1 is the lazy regime (pair with lr / scale, as for alpha), << 1 starts the output
     # near 0. With tied weights lm_head is wte, so the input embedding is scaled too and wpe
     # is scaled alike to keep the token/position balance into the first LayerNorm
     init_head_scale: float = 1.0
     # Chizat-Bach lazy scaling as an output multiplier: logits = alpha * lm_head(x). No weight is
     # touched, so the softmax inside attention is unaffected. alpha=1 is the usual model;
-    # alpha >> 1 with lr / alpha^2 is the lazy regime
+    # alpha >> 1 with lr / alpha is the lazy regime (lr / alpha^2 under gradient flow, but AdamW's
+    # step is set by lr, not the gradient, so one power of alpha is the right correction there)
     alpha: float = 1.0
     tie_weights: bool = True # lm_head.weight is transformer.wte.weight (GPT-2 style)
 
