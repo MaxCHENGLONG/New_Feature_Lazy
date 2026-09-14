@@ -229,6 +229,50 @@ class GPT(nn.Module):
             n_params -= self.transformer.wpe.weight.numel()
         return n_params
 
+    @torch.no_grad()
+    def init_report(self):
+        """which weight tensors the init_* knobs acted on, and how. Per group: the multiplier it
+        got (init_scales), the knobs it was made of, its tensors and their std right after init;
+        plus the knob -> groups map. train.py writes it to out_dir/init_info.json"""
+        c, s = self.config, self.config.init_scales()
+        tied = c.tie_weights
+        block = f"init_block_scale={c.init_block_scale}"
+        proj = f"init_proj_scale={c.init_proj_scale}" + (" * 1/sqrt(2*n_layer)" if c.init_scale_residual else "")
+        head = f" * init_head_scale={c.init_head_scale} (tied)" if tied else ""
+        h = self.transformer.h
+        groups = {
+            'wte':         (f"init_wte_scale={c.init_wte_scale}{head}", [self.transformer.wte.weight]),
+            'wpe':         (f"init_wpe_scale={c.init_wpe_scale}{head}", [self.transformer.wpe.weight]),
+            'c_attn':      (f"{block} * init_attn_scale={c.init_attn_scale}", [b.attn.c_attn.weight for b in h]),
+            'attn.c_proj': (f"{block} * init_attn_scale={c.init_attn_scale} * {proj}", [b.attn.c_proj.weight for b in h]),
+            'c_fc':        (f"{block} * init_mlp_scale={c.init_mlp_scale}", [b.mlp.c_fc.weight for b in h]),
+            'mlp.c_proj':  (f"{block} * init_mlp_scale={c.init_mlp_scale} * {proj}", [b.mlp.c_proj.weight for b in h]),
+            'lm_head':     (f"init_head_scale={c.init_head_scale}"
+                            + (f" * init_wte_scale={c.init_wte_scale} (tied: same tensor as wte)" if tied else ""),
+                            [self.lm_head.weight]),
+        }
+        names = {id(p): n for n, p in self.named_parameters()} # a tied lm_head resolves to transformer.wte.weight
+        return {
+            'knobs': {
+                'init_dist': ['every group (the draw itself)'],
+                'init_std': ['every group (the draw itself)'],
+                'init_gain': ['every group (xavier draws only)'],
+                'init_wte_scale': ['wte'] + (['lm_head'] if tied else []),
+                'init_wpe_scale': ['wpe'],
+                'init_attn_scale': ['c_attn', 'attn.c_proj'],
+                'init_mlp_scale': ['c_fc', 'mlp.c_proj'],
+                'init_head_scale': ['lm_head'] + (['wte', 'wpe'] if tied else []),
+                'init_block_scale': ['c_attn', 'attn.c_proj', 'c_fc', 'mlp.c_proj'],
+                'init_proj_scale': ['attn.c_proj', 'mlp.c_proj'],
+                'init_scale_residual': ['attn.c_proj', 'mlp.c_proj'],
+            },
+            'groups': {g: {'scale': s[g], 'from': how,
+                           'std': float(torch.stack([p.float().std() for p in ps]).mean()),
+                           'shape': list(ps[0].shape), 'tensors': [names[id(p)] for p in ps]}
+                       for g, (how, ps) in groups.items()},
+            'untouched': 'LayerNorm weight=1 / bias=0 and every Linear bias=0, whatever the knobs',
+        }
+
     def _init_weight_(self, w):
         """ draw a weight tensor from the distribution configured by init_dist """
         dist, std, gain = self.config.init_dist, self.config.init_std, self.config.init_gain

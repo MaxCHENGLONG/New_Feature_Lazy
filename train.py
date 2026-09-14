@@ -26,6 +26,8 @@ $ python train.py --init_dist=xavier_uniform --init_gain=1.0 --seed=1
 """
 
 import os
+import sys
+import json
 import time
 import math
 import pickle
@@ -114,6 +116,7 @@ compile = True # use PyTorch 2.0 to compile the model to be faster
 compile_mode = 'default' # 'default' | 'max-autotune'. the latter compiles slower but tunes kernels for the GPU
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
+defaults = {k: globals()[k] for k in config_keys} # to tell the overrides apart, for init_info.json
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
@@ -211,6 +214,22 @@ if init_from == 'scratch':
     model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
+    if master_process:
+        # record next to the checkpoints which weights this command's init_* flags acted on,
+        # and by how much: the overrides, the knob -> weight-group map, and per group the
+        # multiplier, the std right after init and the tensor names
+        overrides = {k: v for k, v in config.items() if v != defaults[k]}
+        report = model.init_report()
+        info = {'command': 'python ' + ' '.join(sys.argv), 'overrides': overrides,
+                'effect': [f"{k}={v}: {', '.join(report['knobs'][k])}" for k, v in overrides.items() if k in report['knobs']],
+                **report}
+        with open(os.path.join(out_dir, 'init_info.json'), 'w') as f:
+            json.dump(info, f, indent=2)
+        for line in info['effect']:
+            print(f"  {line}")
+        for g, r in report['groups'].items():
+            print(f"  {g:<12} x{r['scale']:<8.4g} std {r['std']:.4g}  <- {r['from']}")
+        print(f"wrote {os.path.join(out_dir, 'init_info.json')}")
 elif init_from == 'resume':
     print(f"Resuming training from {out_dir}")
     # resume training from a checkpoint.

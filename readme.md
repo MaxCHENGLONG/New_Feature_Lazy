@@ -229,6 +229,20 @@ multiply on top (e.g. `attn.c_proj` starts at
 `metadata.json` as `init.tensor_scale` and the frustration script to `balance.json` as
 `init_scales`, so the per-group init std is recoverable from either file.
 
+A from-scratch run also writes `<out_dir>/init_info.json` (and prints the same table) stating
+what the command did to the weights: the `command`, the `overrides` it made to the defaults,
+one `effect` line per overridden init flag naming the weight groups it touched, the full
+`knobs` -> groups map, and per group the multiplier, the std measured right after init, the
+shape and the tensor names:
+
+```
+"effect": ["init_scale_residual=False: attn.c_proj, mlp.c_proj", "init_attn_scale=5.0: c_attn, attn.c_proj"],
+"groups": {
+  "c_attn": {"scale": 5.0, "from": "init_block_scale=1.0 * init_attn_scale=5.0", "std": 0.0999,
+             "shape": [2304, 768], "tensors": ["transformer.h.0.attn.c_attn.weight", ...]},
+  ...
+```
+
 ### Feature learning vs lazy learning
 
 All three share `std=0.02` for every matrix (so the GPT-2 `1/sqrt(2*n_layer)` rescale is
@@ -254,6 +268,27 @@ python train.py --init_scale_residual=False --init_head_scale=8.0     # lm_head 
 # token embedding and head set apart, plus wpe, attention and MLP, all at once
 python train.py --init_scale_residual=False --tie_weights=False --init_wte_scale=0.5 \
     --init_wpe_scale=2.0 --init_attn_scale=5.0 --init_mlp_scale=0.2 --init_head_scale=8.0
+```
+
+On the cluster the same overrides go after the run name. Every run name is its own
+`runs/<name>`, and a `full` job resumes from `runs/<name>/ckpt.pt` when it exists, so give
+each init its own name and resubmit a continuation with the identical flags:
+
+```bash
+sbatch enviorments/train_nano.sh smoke attn5 --init_scale_residual=False --init_attn_scale=5.0   # ~100 iters, check first
+sbatch enviorments/train_nano.sh full attn5 --init_scale_residual=False --init_attn_scale=5.0
+sbatch enviorments/train_nano.sh full mlp0.1 --init_scale_residual=False --init_mlp_scale=0.1
+sbatch enviorments/train_nano.sh full wpe0.1 --init_scale_residual=False --init_wpe_scale=0.1
+# lazy via the readout: lm_head (and the tied wte / wpe) x8, learning_rate and min_lr / 8
+sbatch enviorments/train_nano.sh full head8 --init_scale_residual=False --init_head_scale=8.0 \
+    --learning_rate=7.5e-5 --min_lr=7.5e-6
+# untied: token embedding and head set apart
+sbatch enviorments/train_nano.sh full wte0.5_head8 --init_scale_residual=False --tie_weights=False \
+    --init_wte_scale=0.5 --init_head_scale=8.0 --learning_rate=7.5e-5 --min_lr=7.5e-6
+# a sweep: one job per value
+for s in 0.1 0.5 2.0 5.0; do
+    sbatch enviorments/train_nano.sh full attn$s --init_scale_residual=False --init_attn_scale=$s
+done
 ```
 
 Snapshot `ckpt_0000000.pt` is iteration 0, i.e. the untrained initialization itself — export
