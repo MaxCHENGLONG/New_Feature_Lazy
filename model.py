@@ -127,6 +127,14 @@ class GPTConfig:
     # as scale^2 and the attention logits as scale^2: << 1 starts the network near the
     # embedding-only model (feature regime), >> 1 is the lazy end
     init_block_scale: float = 1.0
+    # per-group in-place multipliers on top of init_std (effective std = init_std * scale), one
+    # per weight group so each can be set alone or in any combination. They compose with
+    # init_block_scale (attn and mlp) and init_proj_scale (the two c_proj) multiplicatively;
+    # init_scales() below gives the multiplier every tensor ends up with
+    init_wte_scale: float = 1.0 # token embedding wte. with tie_weights wte is lm_head, see init_head_scale
+    init_wpe_scale: float = 1.0 # position embedding wpe
+    init_attn_scale: float = 1.0 # c_attn (Q/K/V) and attn.c_proj (O) in every block
+    init_mlp_scale: float = 1.0 # c_fc and mlp.c_proj in every block
     # in-place multiplier on lm_head.weight after init. The logits scale with it exactly like
     # with alpha, but here it is the magnitude of the initial weights that sets the regime:
     # >> 1 is the lazy regime (pair with lr / scale, as for alpha), << 1 starts the output
@@ -139,6 +147,27 @@ class GPTConfig:
     # step is set by lr, not the gradient, so one power of alpha is the right correction there)
     alpha: float = 1.0
     tie_weights: bool = True # lm_head.weight is transformer.wte.weight (GPT-2 style)
+
+    def init_scales(self):
+        """multiplier each weight tensor carries on top of its init_dist draw. GPT.__init__ applies
+        them in place, so they are baked into the saved weights (unlike alpha). With tie_weights,
+        wte and lm_head are one tensor and get init_wte_scale * init_head_scale; wpe is then scaled
+        by init_head_scale alike to keep the token/position balance into the first LayerNorm"""
+        proj = self.init_proj_scale
+        if self.init_scale_residual:
+            proj *= 1.0 / math.sqrt(2 * self.n_layer) # GPT-2 residual rescale
+        attn = self.init_block_scale * self.init_attn_scale
+        mlp = self.init_block_scale * self.init_mlp_scale
+        head_on_embd = self.init_head_scale if self.tie_weights else 1.0
+        return {
+            'wte': self.init_wte_scale * head_on_embd,
+            'wpe': self.init_wpe_scale * head_on_embd,
+            'c_attn': attn, # Q/K/V
+            'attn.c_proj': attn * proj, # O
+            'c_fc': mlp,
+            'mlp.c_proj': mlp * proj,
+            'lm_head': self.init_head_scale * (self.init_wte_scale if self.tie_weights else 1.0),
+        }
 
 class GPT(nn.Module):
 
@@ -165,33 +194,28 @@ class GPT(nn.Module):
 
         # init all weights
         self.apply(self._init_weights)
-        if config.init_block_scale != 1.0:
-            with torch.no_grad():
-                for pn, p in self.named_parameters():
-                    if pn.startswith('transformer.h.') and pn.endswith(('c_attn.weight', 'c_proj.weight', 'c_fc.weight')):
-                        p.mul_(config.init_block_scale)
-        # apply special scaled init to the residual projections, per GPT-2 paper, plus the
-        # optional init_proj_scale. done as an in-place rescale rather than a re-draw so it
-        # composes with any init_dist
-        proj_scale = config.init_proj_scale
-        if config.init_scale_residual:
-            proj_scale *= 1.0 / math.sqrt(2 * config.n_layer)
-        if proj_scale != 1.0:
-            with torch.no_grad():
-                for pn, p in self.named_parameters():
-                    if pn.endswith('c_proj.weight'):
-                        p.mul_(proj_scale)
-        if config.init_head_scale != 1.0:
-            with torch.no_grad():
-                self.lm_head.weight.mul_(config.init_head_scale)
-                if config.tie_weights:
-                    self.transformer.wpe.weight.mul_(config.init_head_scale)
+        # then rescale every weight group in place by the multiplier config.init_scales() gives
+        # it, so the per-group knobs compose with any init_dist. All of them are scalar
+        # multipliers, so they combine freely and the order does not matter
+        s = config.init_scales()
+        with torch.no_grad():
+            for block in self.transformer.h:
+                block.attn.c_attn.weight.mul_(s['c_attn'])
+                block.attn.c_proj.weight.mul_(s['attn.c_proj'])
+                block.mlp.c_fc.weight.mul_(s['c_fc'])
+                block.mlp.c_proj.weight.mul_(s['mlp.c_proj'])
+            self.transformer.wte.weight.mul_(s['wte'])
+            self.transformer.wpe.weight.mul_(s['wpe'])
+            if not config.tie_weights: # tied: lm_head is wte, scaled just above
+                self.lm_head.weight.mul_(s['lm_head'])
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
         print(f"weight init: dist={config.init_dist}, std={config.init_std}, gain={config.init_gain}, "
               f"scale_residual={config.init_scale_residual}, proj_scale={config.init_proj_scale}, "
-              f"block_scale={config.init_block_scale}, head_scale={config.init_head_scale}, alpha={config.alpha}")
+              f"block_scale={config.init_block_scale}, wte_scale={config.init_wte_scale}, "
+              f"wpe_scale={config.init_wpe_scale}, attn_scale={config.init_attn_scale}, "
+              f"mlp_scale={config.init_mlp_scale}, head_scale={config.init_head_scale}, alpha={config.alpha}")
 
     def get_num_params(self, non_embedding=True):
         """

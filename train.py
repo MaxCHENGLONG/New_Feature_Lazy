@@ -75,6 +75,13 @@ init_gain = 1.0 # gain of the xavier inits. ignored by the others
 init_scale_residual = True # rescale residual projections by 1/sqrt(2*n_layer), per GPT-2
 init_proj_scale = 1.0 # extra multiplier on every c_proj.weight. 1e-3 or 0.0: saddle-to-saddle init
 init_block_scale = 1.0 # multiplier on every Linear inside the blocks (Q/K/V/O, fc, proj); wte/wpe/LayerNorm stay at init_std. << 1: feature regime, >> 1: lazy
+# per-group multipliers on init_std (that group starts at std init_std * scale). Set any one alone or
+# combine freely; they multiply with init_block_scale / init_proj_scale. With tie_weights=True, wte is
+# lm_head, so init_wte_scale and init_head_scale hit the same tensor: use --tie_weights=False to separate them
+init_wte_scale = 1.0 # token embedding wte
+init_wpe_scale = 1.0 # position embedding wpe
+init_attn_scale = 1.0 # c_attn (Q/K/V) and attn.c_proj (O) in every block
+init_mlp_scale = 1.0 # c_fc and mlp.c_proj in every block
 init_head_scale = 1.0 # multiplier on lm_head.weight after init. >> 1: lazy regime set by the readout magnitude (pass learning_rate / scale yourself), << 1: output starts near 0
 seed = 1337 # rng seed. change it to draw a different init (and a different data order)
 # lazy regime, per Chizat & Bach (2019): logits = alpha * f(theta) with every weight drawn
@@ -191,7 +198,9 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   bias=bias, vocab_size=None, dropout=dropout,
                   init_dist=init_dist, init_std=init_std, init_gain=init_gain,
                   init_scale_residual=init_scale_residual, init_proj_scale=init_proj_scale,
-                  init_block_scale=init_block_scale, init_head_scale=init_head_scale,
+                  init_block_scale=init_block_scale, init_wte_scale=init_wte_scale,
+                  init_wpe_scale=init_wpe_scale, init_attn_scale=init_attn_scale,
+                  init_mlp_scale=init_mlp_scale, init_head_scale=init_head_scale,
                   alpha=alpha, tie_weights=tie_weights) # start with model_args from command line
 if init_from == 'scratch':
     # init a new model from scratch

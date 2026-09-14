@@ -4,6 +4,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 import numpy as np
 
+from model import GPTConfig
+
 def load_model_information(load_path):
     '''Load model information to dict from a train.py checkpoint (ckpt_*.pt or ckpt.pt).'''
     # weights_only=False because our checkpoints carry the model_args/config dicts too
@@ -60,6 +62,8 @@ def load_model_information(load_path):
         'W1_list': W1_list,
         'W2_list': W2_list,
         'std': float(data['model_args']['init_std']),
+        # multiplier each weight group got on top of init_std at init (wte, wpe, c_attn, ...)
+        'init_scales': GPTConfig(**data['model_args']).init_scales(),
         'loss': float(data['best_val_loss']),
         'iter': int(data['iter_num']),
         'config': data.get('config', {}),   # the train.py settings of the run (alpha, seed, ...)

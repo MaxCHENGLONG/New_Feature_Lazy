@@ -39,6 +39,12 @@
 #    factor is NOT baked into lm_head.pt. metadata.json records it as a top-level "alpha"
 #    (1.0 for ordinary runs) and inference/gpt_forward.py applies it after the head.
 #
+# 6. INIT SCALES. The init_* knobs of train.py (init_std, the per-group multipliers
+#    init_wte/wpe/attn/mlp/head_scale, init_block_scale, init_proj_scale and the GPT-2 residual
+#    rescale) are applied in place at init, so unlike alpha they ARE baked into the saved
+#    tensors. metadata.json records them under a top-level "init", together with the multiplier
+#    each exported tensor carries relative to a plain init_std draw ("init.tensor_scale").
+#
 # Unchanged from HF and safe to reuse:
 #   - QKV layout: c_attn output is viewed as (3, n_head, head_dim) with 3 as the
 #     slowest dim, i.e. flat [Q | K | V] blocks, each split into contiguous heads.
@@ -52,9 +58,27 @@ import json
 import os
 import torch
 
+from model import GPTConfig  # init_* defaults and the per-tensor init multipliers (note 6)
+
 LN_EPS = 1e-5              # hardcoded in model.py's LayerNorm.forward
 HIDDEN_ACT = "gelu_new"    # nn.GELU(approximate='tanh')
 GPT2_VOCAB = 50257         # real GPT-2 BPE vocab, which nanoGPT pads up for speed
+INIT_KEYS = ["init_dist", "init_std", "init_gain", "init_scale_residual", "init_proj_scale",
+             "init_block_scale", "init_wte_scale", "init_wpe_scale", "init_attn_scale",
+             "init_mlp_scale", "init_head_scale"]
+
+
+def init_metadata(model_args):
+    """The weight-init settings of the run and the multiplier each exported tensor carries on top
+    of its init_dist draw (see note 6). GPTConfig fills in the defaults for older checkpoints."""
+    cfg = GPTConfig(**model_args)
+    s = cfg.init_scales()
+    return {
+        **{k.removeprefix("init_"): getattr(cfg, k) for k in INIT_KEYS},
+        "tensor_scale": {"wte": s["wte"], "wpe": s["wpe"], "W_Q/W_K/W_V": s["c_attn"],
+                         "W_O": s["attn.c_proj"], "W_fc": s["c_fc"], "W_proj": s["mlp.c_proj"],
+                         "lm_head": s["lm_head"]},
+    }
 
 
 def load_state_dict(ckpt_path):
@@ -241,6 +265,7 @@ def build_metadata(dims, ckpt, ckpt_path):
         "bias": False,
         "tie_weights": tied,
         "alpha": dims["alpha"],
+        "init": init_metadata(ckpt["model_args"]),
         "architecture_notes": {
             "norm_type": "pre-norm (LayerNorm before attention/MLP, not after)",
             "layer_type": "nn.Linear (weight is [out, in]) - TRANSPOSED on export to the "
@@ -264,6 +289,11 @@ def build_metadata(dims, ckpt, ckpt_path):
             "alpha": (
                 f"logits = alpha * ln_f(x) @ lm_head.T with alpha = {dims['alpha']}. The factor "
                 "is applied at forward time and is NOT baked into lm_head.pt"
+            ),
+            "init": (
+                "the init_* scales (see top-level 'init') were applied in place at init, so they "
+                "ARE baked into the saved tensors: each tensor started at init_dist(std) times "
+                "init.tensor_scale[<tensor>]"
             ),
         },
         "directory_structure": {

@@ -91,6 +91,12 @@ Notes:
   baked into `lm_head.pt`. `metadata.json` records it as a top-level `alpha` (1.0 for ordinary
   runs) and `inference/gpt_forward.py` applies it after the head, so sampling and `verify.py`
   match `model.py`. Exports made before this key existed are read as `alpha = 1.0`.
+- The `init_*` settings of the run (`init_std`, `init_wte_scale`, `init_wpe_scale`,
+  `init_attn_scale`, `init_mlp_scale`, `init_head_scale`, ...) **are** baked into the saved
+  tensors, since `model.py` applies them in place at init. `metadata.json` records them as a
+  top-level `init` (defaults filled in for older checkpoints), whose `tensor_scale` gives the
+  multiplier each exported tensor started with relative to a plain `init_std` draw
+  (`wte`, `wpe`, `W_Q/W_K/W_V`, `W_O`, `W_fc`, `W_proj`, `lm_head`).
 
 Batch export — every checkpoint in one or more run directories, skipping the ones already
 done:
@@ -182,7 +188,12 @@ Each run name gets its own `out_dir`, so parallel init sweeps never share a chec
 | `--init_gain` | `1.0` | gain of `xavier_normal` / `xavier_uniform`; ignored by the others |
 | `--init_scale_residual` | `True` | multiply every `c_proj.weight` by `1/sqrt(2*n_layer)` (GPT-2 paper) |
 | `--init_proj_scale` | `1.0` | extra multiplier on every `c_proj.weight`, composed with the above. `1e-3` or `0.0` gives the saddle-to-saddle init |
-| `--init_block_scale` | `1.0` | multiplier on every Linear inside the blocks (`c_attn` = Q/K/V, `attn.c_proj` = O, `c_fc`, `mlp.c_proj`), i.e. those start at std `init_std * init_block_scale`; `wte` / `wpe` / LayerNorm stay at `init_std`. Applied before `init_proj_scale`, composes with it |
+| `--init_block_scale` | `1.0` | multiplier on every Linear inside the blocks (`c_attn` = Q/K/V, `attn.c_proj` = O, `c_fc`, `mlp.c_proj`), i.e. those start at std `init_std * init_block_scale`; `wte` / `wpe` / LayerNorm stay at `init_std`. Applied before `init_proj_scale`, composes with it. Same as setting `--init_attn_scale` and `--init_mlp_scale` together |
+| `--init_wte_scale` | `1.0` | multiplier on the token embedding `wte`: it starts at std `init_std * init_wte_scale`. With `tie_weights=True` (default) `wte` **is** `lm_head`, so this and `--init_head_scale` multiply the same tensor; pass `--tie_weights=False` to set embedding and head apart |
+| `--init_wpe_scale` | `1.0` | multiplier on the position embedding `wpe`: it starts at std `init_std * init_wpe_scale` |
+| `--init_attn_scale` | `1.0` | multiplier on `c_attn` (Q/K/V) and `attn.c_proj` (O) in every block: they start at std `init_std * init_attn_scale` |
+| `--init_mlp_scale` | `1.0` | multiplier on `c_fc` and `mlp.c_proj` in every block: they start at std `init_std * init_mlp_scale` |
+| `--init_head_scale` | `1.0` | multiplier on `lm_head.weight` (and on `wpe` when tied, to keep the token/position balance). `>> 1`: lazy regime set by the readout magnitude, pass `learning_rate / scale` yourself; `<< 1`: output starts near 0 |
 | `--alpha` | `1.0` | logits are multiplied by `alpha` at forward time; `learning_rate` and `min_lr` are divided by `alpha` (not `alpha^2`: AdamW's step is set by `lr`, not the gradient). No weight is scaled |
 | `--seed` | `1337` | changes the draw (and the data order) |
 
@@ -204,8 +215,19 @@ The run prints the settings it used, and every checkpoint stores them in its `co
 dict — `metadata.json` carries them through to the export as `source.train_config`:
 
 ```
-weight init: dist=normal, std=0.02, gain=1.0, scale_residual=True, proj_scale=1.0, alpha=1.0
+weight init: dist=normal, std=0.02, gain=1.0, scale_residual=True, proj_scale=1.0, block_scale=1.0, wte_scale=1.0, wpe_scale=1.0, attn_scale=1.0, mlp_scale=1.0, head_scale=1.0, alpha=1.0
 ```
+
+The per-group multipliers (`init_wte_scale`, `init_wpe_scale`, `init_attn_scale`,
+`init_mlp_scale`, `init_head_scale`) are independent: set one alone or any combination, and
+each group starts at std `init_std * <its scale>`. Everything is a scalar multiplier applied in
+place after the draw, so `init_block_scale`, `init_proj_scale` and the residual rescale simply
+multiply on top (e.g. `attn.c_proj` starts at
+`init_std * init_block_scale * init_attn_scale * init_proj_scale / sqrt(2*n_layer)`).
+`GPTConfig.init_scales()` returns the multiplier every tensor ends up with (`wte`, `wpe`,
+`c_attn`, `attn.c_proj`, `c_fc`, `mlp.c_proj`, `lm_head`); the export writes it to
+`metadata.json` as `init.tensor_scale` and the frustration script to `balance.json` as
+`init_scales`, so the per-group init std is recoverable from either file.
 
 ### Feature learning vs lazy learning
 
@@ -223,6 +245,15 @@ python train.py --init_scale_residual=False --alpha=32.0
 # wte / wpe stay at 0.02 so the residual stream and the output logits keep their scale
 python train.py --init_scale_residual=False --init_block_scale=0.1    # towards feature
 python train.py --init_scale_residual=False --init_block_scale=5.0    # towards lazy
+# per-group init scale: each of the four knobs alone, or any combination (std = 0.02 * scale)
+python train.py --init_scale_residual=False --init_attn_scale=5.0     # Q/K/V/O only
+python train.py --init_scale_residual=False --init_mlp_scale=0.1      # fc / mlp.c_proj only
+python train.py --init_scale_residual=False --init_wpe_scale=0.1      # position embedding only
+python train.py --init_scale_residual=False --init_wte_scale=3.0      # token embedding (and lm_head, since tied)
+python train.py --init_scale_residual=False --init_head_scale=8.0     # lm_head (and wte / wpe, since tied)
+# token embedding and head set apart, plus wpe, attention and MLP, all at once
+python train.py --init_scale_residual=False --tie_weights=False --init_wte_scale=0.5 \
+    --init_wpe_scale=2.0 --init_attn_scale=5.0 --init_mlp_scale=0.2 --init_head_scale=8.0
 ```
 
 Snapshot `ckpt_0000000.pt` is iteration 0, i.e. the untrained initialization itself — export
@@ -267,4 +298,6 @@ python transformer_frustration/transformer_frustration_and_distance.py --merge -
 | `--out` | see above | output json path |
 
 The json holds, per snapshot: `epoch`, `loss`, `r_frust` (real), `n_frust` (list of nulls),
-`distance`, and the run's `train_config` so the file records which regime it came from.
+`distance`, plus the run's `std` (`init_std`), `init_scales` (the multiplier each weight group
+got on top of it at init: `wte`, `wpe`, `c_attn`, `attn.c_proj`, `c_fc`, `mlp.c_proj`,
+`lm_head`) and `train_config`, so the file records which regime it came from.

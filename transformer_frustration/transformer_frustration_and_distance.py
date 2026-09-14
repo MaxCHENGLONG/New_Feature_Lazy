@@ -112,6 +112,7 @@ def main():
         'is_embed': args.is_embed,
         'seed': args.seed,
         'std': None,
+        'init_scales': None,   # per-group multiplier on std at init (wte, wpe, c_attn, ...)
         'train_config': None,
         'epoch': [],
         'loss': [],
@@ -145,6 +146,7 @@ def main():
         save_data['loss'].append(model_info['loss'])
         if save_data['std'] is None:
             save_data['std'] = model_info['std']
+            save_data['init_scales'] = model_info['init_scales']
             save_data['train_config'] = model_info['config']
         if epoch == 0:
             vals0 = vals
