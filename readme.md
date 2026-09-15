@@ -336,3 +336,26 @@ The json holds, per snapshot: `epoch`, `loss`, `r_frust` (real), `n_frust` (list
 `distance`, plus the run's `std` (`init_std`), `init_scales` (the multiplier each weight group
 got on top of it at init: `wte`, `wpe`, `c_attn`, `attn.c_proj`, `c_fc`, `mlp.c_proj`,
 `lm_head`) and `train_config`, so the file records which regime it came from.
+
+### Plot
+
+`learning_analysis/plot_balance.py` draws the figure of `analysis_frustration.ipynb` (rows:
+real vs null frustration, loss at the evaluated iterations, relative distance
+`||theta_t - theta_0|| / ||theta_0||`) with one column per `balance.json`. It is headless, so
+it runs on the login node straight from the run directories, no job needed:
+
+```bash
+CACHE_DIR=/nobackup/proj/disk/naiss2025-22-1730/personal/licheng
+apptainer exec --bind /nobackup $CACHE_DIR/GPT2_Training/nanogpt.sif \
+    python learning_analysis/plot_balance.py --out learning_analysis/attn_wd0 \
+    --run $CACHE_DIR/runs/rich_bs1wd0/balance.json    'Rich (init scale $= 1$, wd $= 0$)' rich \
+    --run $CACHE_DIR/runs/lazy_attn5_wd0/balance.json  'QKVO $\times 5$, wd $= 0$' \
+    --run $CACHE_DIR/runs/lazy_attn10_wd0/balance.json 'QKVO $\times 10$, wd $= 0$' \
+    --run $CACHE_DIR/runs/lazy_attn20_wd0/balance.json 'QKVO $\times 20$, wd $= 0$'
+```
+
+`--run` takes `FILE TITLE [COLOR]` (`lazy` = orange, the default; `rich` = blue; or any
+matplotlib colour), one per column, and `--out` is written as `.pdf` and `.png`. The distance
+row is normalised by `||theta_0||` computed from the json's `init_scales`, so runs whose init
+scaled only Q/K/V/O or only the MLP are comparable; files from before that key existed fall
+back to `init_block_scale`.
